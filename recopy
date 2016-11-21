@@ -1,0 +1,124 @@
+#!/bin/bash
+
+# recopy utility tool
+# Sqlite3 database with md5 and paths to have classified images archived
+
+DB="images"
+DB_file="$DB.db"
+
+case $OSTYPE in 
+	darwin*)
+		MD5SUM="md5 -r" 
+		OS="mac"	
+	;;
+	*) 
+		MD5SUM="md5sum"
+		OS="lin"
+	;;
+esac
+
+# Some sqlite Wrappers
+function create_table()
+{
+    sqlite3 $DB_file  "create table '$1' (id INTEGER PRIMARY KEY, d DATE, md5 TEXT, path TEXT);"
+    echo "$1 created"
+}
+
+function list_table()
+{
+    sqlite3 $DB_file "SELECT name FROM sqlite_master WHERE type='table';"
+}
+
+function sql()
+{
+    sqlite3 $DB_file "$1";
+}
+
+# OS dependent implementation of getDate
+function getDate()
+{
+	if [ "$OS" == "lin" ]
+	then
+		date=`exif -m -t 0x9003 "$@" 2> /dev/null | cut -d':' -f1,2 | tr ':' '/'`
+	else
+        date=`mdls -name kMDItemContentCreationDate "$@" | cut -d' ' -f3 | cut -d'-' -f1,2 | tr '-' '/'`    
+    fi
+}
+
+function insert_image()
+{
+    md5=`$MD5SUM "$1"  | cut -d' ' -f1`
+    
+    exists=`sql "select * from $DB where md5='$md5'"`
+    if [ -z "$exists" ]
+    then
+        name=`basename "$1"`
+        getDate "$1"
+        path="$date/${md5}_${name}"
+        now=`date`
+        sqlite3 $DB_file  "insert into $DB (d, md5, path) values ('$now','$md5', '$path');"
+        mkdir -p "$date"
+        cp "$1" "$path"
+    fi
+}
+
+# Spin functions
+sp="/-\|"
+sc=0
+spin() {
+   printf "\r${sp:sc++:1} $1/$2"
+   ((sc==${#sp})) && sc=0
+}
+endspin() {
+   printf "\r%s\n" "$@"
+}
+
+# Process a directory or a file
+function process()
+{
+    if [ -d "$1" ]
+    then
+        i=0
+        files=`find -L "$1" -type f`
+        max=`echo "$files" | wc -l`
+        echo "$files" | while read f
+        do
+            spin $i $max
+            insert_image "$f"
+            i=$((i+1))
+        done
+        endspin "$max have been processed"
+    else
+        insert_image "$1"
+    fi
+}
+
+# main menu
+case $1 in
+    init)
+    if [ ! -f "$DB_file" ]
+    then
+        create_table $DB
+    fi
+    ;;
+    status)
+        echo -n "Images : "; sqlite3 $DB_file "select COUNT(*) from $DB" 
+    ;;
+    search)
+        if [ "$2" = "" ]
+        then
+            sql "select * from $DB"
+        else
+            sql "select * from $DB where $2"
+        fi
+    ;;
+    insert)
+        process "$2"
+    ;;
+    *) echo "init : create $database.db"
+     echo "status : number of images"
+     echo "search : list all"
+     echo "search condition : condition is where clause"
+     echo "insert image : insert image and copy it"
+    ;;
+esac
